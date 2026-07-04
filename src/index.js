@@ -17,8 +17,6 @@ if (!process.env.MASTER_MNEMONIC) {
   console.log('===================================================================\n');
   console.log(generated);
   console.log('\n===================================================================\n\n');
-  // Keep the health server up so Render doesn't mark the deploy as crashed while you copy this,
-  // but don't touch Discord or the database with an ungenerated wallet root.
   const app = express();
   app.get('/', (req, res) => res.send('GoldMM is waiting for MASTER_MNEMONIC to be set — check the Logs tab.'));
   app.listen(process.env.PORT || 3000, () => console.log(`Health server on port ${process.env.PORT || 3000} (waiting for MASTER_MNEMONIC)`));
@@ -41,44 +39,51 @@ client.once('ready', async () => {
   startMonitor(client);
 });
 
+// Belt-and-braces: never let one bad interaction take the whole process down.
+process.on('unhandledRejection', (err) => {
+  console.error('[unhandled rejection - bot stayed alive]', err);
+});
+
 client.on('interactionCreate', async (interaction) => {
   try {
     if (interaction.isChatInputCommand() && interaction.commandName === 'mm') {
       const sub = interaction.options.getSubcommand();
       const group = interaction.options.getSubcommandGroup(false);
 
-      if (!group && sub === 'panel') return mm.handlePanel(interaction);
-      if (group === 'admin' && sub === 'resolve') return mm.handleAdminResolve(interaction);
-      if (group === 'admin' && sub === 'status') return mm.handleAdminStatus(interaction);
-      if (group === 'admin' && sub === 'wallet') return mm.handleAdminWallet(interaction);
-      if (group === 'admin' && sub === 'withdraw') return mm.handleAdminWithdraw(interaction);
-      return interaction.reply({ content: 'Unknown subcommand.', ephemeral: true });
+      if (!group && sub === 'panel') { await mm.handlePanel(interaction); return; }
+      if (group === 'admin' && sub === 'resolve') { await mm.handleAdminResolve(interaction); return; }
+      if (group === 'admin' && sub === 'status') { await mm.handleAdminStatus(interaction); return; }
+      if (group === 'admin' && sub === 'wallet') { await mm.handleAdminWallet(interaction); return; }
+      if (group === 'admin' && sub === 'withdraw') { await mm.handleAdminWithdraw(interaction); return; }
+      await interaction.reply({ content: 'Unknown subcommand.', ephemeral: true });
+      return;
     }
 
     if (interaction.isStringSelectMenu() && interaction.customId === 'panel_coin_select') {
-      return interactions.handleCoinSelect(interaction);
+      await interactions.handleCoinSelect(interaction);
+      return;
     }
 
     if (interaction.isButton()) {
       const id = interaction.customId;
-      if (id.startsWith('claim_sender_')) return interactions.handleClaimRole(interaction, tradeIdFrom(id), 'sender');
-      if (id.startsWith('claim_receiver_')) return interactions.handleClaimRole(interaction, tradeIdFrom(id), 'receiver');
-      if (id.startsWith('enter_amount_')) return interactions.openAmountModal(interaction, tradeIdFrom(id));
-      if (id.startsWith('confirm_amount_')) return interactions.handleConfirmAmount(interaction, tradeIdFrom(id));
-      if (id.startsWith('copy_info_')) return interactions.handleCopyInfo(interaction, tradeIdFrom(id));
-      if (id.startsWith('submit_address_')) return interactions.openAddressModal(interaction, tradeIdFrom(id));
-      if (id.startsWith('release_')) return interactions.handleRelease(interaction, tradeIdFrom(id));
-      if (id.startsWith('agree_cancel_')) return interactions.handleAgreeCancel(interaction, tradeIdFrom(id));
-      if (id.startsWith('dispute_')) return interactions.handleDispute(interaction, tradeIdFrom(id));
-      if (id.startsWith('admin_release_')) return interactions.handleAdminAction(interaction, tradeIdFrom(id), 'release');
-      if (id.startsWith('admin_refund_')) return interactions.handleAdminAction(interaction, tradeIdFrom(id), 'refund');
+      if (id.startsWith('claim_sender_')) { await interactions.handleClaimRole(interaction, tradeIdFrom(id), 'sender'); return; }
+      if (id.startsWith('claim_receiver_')) { await interactions.handleClaimRole(interaction, tradeIdFrom(id), 'receiver'); return; }
+      if (id.startsWith('enter_amount_')) { await interactions.openAmountModal(interaction, tradeIdFrom(id)); return; }
+      if (id.startsWith('confirm_amount_')) { await interactions.handleConfirmAmount(interaction, tradeIdFrom(id)); return; }
+      if (id.startsWith('copy_info_')) { await interactions.handleCopyInfo(interaction, tradeIdFrom(id)); return; }
+      if (id.startsWith('submit_address_')) { await interactions.openAddressModal(interaction, tradeIdFrom(id)); return; }
+      if (id.startsWith('release_')) { await interactions.handleRelease(interaction, tradeIdFrom(id)); return; }
+      if (id.startsWith('agree_cancel_')) { await interactions.handleAgreeCancel(interaction, tradeIdFrom(id)); return; }
+      if (id.startsWith('dispute_')) { await interactions.handleDispute(interaction, tradeIdFrom(id)); return; }
+      if (id.startsWith('admin_release_')) { await interactions.handleAdminAction(interaction, tradeIdFrom(id), 'release'); return; }
+      if (id.startsWith('admin_refund_')) { await interactions.handleAdminAction(interaction, tradeIdFrom(id), 'refund'); return; }
     }
 
     if (interaction.isModalSubmit()) {
       const id = interaction.customId;
-      if (id.startsWith('ticket_modal_')) return interactions.handleTicketModalSubmit(interaction, id.replace('ticket_modal_', ''));
-      if (id.startsWith('amount_modal_')) return interactions.handleAmountModalSubmit(interaction, tradeIdFrom(id));
-      if (id.startsWith('address_modal_')) return interactions.handleAddressModalSubmit(interaction, tradeIdFrom(id));
+      if (id.startsWith('ticket_modal_')) { await interactions.handleTicketModalSubmit(interaction, id.replace('ticket_modal_', '')); return; }
+      if (id.startsWith('amount_modal_')) { await interactions.handleAmountModalSubmit(interaction, tradeIdFrom(id)); return; }
+      if (id.startsWith('address_modal_')) { await interactions.handleAddressModalSubmit(interaction, tradeIdFrom(id)); return; }
     }
   } catch (err) {
     console.error('[interaction error]', err);

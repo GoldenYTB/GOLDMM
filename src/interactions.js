@@ -41,17 +41,35 @@ async function handleClaimRole(interaction, tradeId, role) {
   await logEvent(tradeId, 'role_claimed', interaction.user.id, role);
 
   const updated = await getTrade(tradeId);
+
   if (updated.sender_id && updated.receiver_id) {
     await query(`UPDATE trades SET status='awaiting_amount' WHERE id=$1`, [tradeId]);
+    // Both roles claimed — remove the buttons for good, for everyone viewing this message.
+    await interaction.update({ embeds: interaction.message.embeds, components: [] });
+
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`enter_amount_${tradeId}`).setLabel('Enter Amount (USD)').setStyle(ButtonStyle.Primary),
     );
-    await interaction.reply({
+    await interaction.channel.send({
       content: `✅ Roles locked in.\nSender (pays crypto): <@${updated.sender_id}>\nReceiver (gets paid): <@${updated.receiver_id}>\n\n<@${updated.sender_id}>, enter the USD amount you'll be sending.`,
       components: [row],
     });
   } else {
-    await interaction.reply({ content: `Got it — waiting on the other party to claim their role.`, ephemeral: true });
+    // Only one side has claimed so far. Disable just the button that was clicked (for
+    // everyone — Discord components can't be disabled for one viewer only), so that
+    // person can't double-claim, while the other role's button stays clickable.
+    const disabledCustomId = role === 'sender' ? `claim_sender_${tradeId}` : `claim_receiver_${tradeId}`;
+    const updatedComponents = interaction.message.components.map(actionRow => {
+      const newRow = new ActionRowBuilder();
+      actionRow.components.forEach(btnComponent => {
+        const btnBuilder = ButtonBuilder.from(btnComponent);
+        if (btnComponent.customId === disabledCustomId) btnBuilder.setDisabled(true);
+        newRow.addComponents(btnBuilder);
+      });
+      return newRow;
+    });
+    await interaction.update({ embeds: interaction.message.embeds, components: updatedComponents });
+    await interaction.followUp({ content: `Got it — waiting on the other party to claim their role.`, ephemeral: true });
   }
 }
 
@@ -114,12 +132,19 @@ async function handleConfirmAmount(interaction, tradeId) {
 
   const isSender = interaction.user.id === trade.sender_id;
   const column = isSender ? 'amount_confirmed_sender' : 'amount_confirmed_receiver';
+
+  if (trade[column]) {
+    return interaction.reply({ content: 'You already confirmed this amount — waiting on the other party.', ephemeral: true });
+  }
+
   await query(`UPDATE trades SET ${column}=true WHERE id=$1`, [tradeId]);
   await logEvent(tradeId, 'amount_confirmed', interaction.user.id);
 
   const updated = await getTrade(tradeId);
   if (updated.amount_confirmed_sender && updated.amount_confirmed_receiver) {
-    await interaction.reply('Both confirmed. Generating deposit address...');
+    // Both confirmed — remove the button for everyone, then proceed.
+    await interaction.update({ content: interaction.message.content, embeds: interaction.message.embeds, components: [] });
+    await interaction.followUp('Both confirmed. Generating deposit address...');
     await generateDepositAddress(interaction, updated);
   } else {
     await interaction.reply({ content: 'Confirmed. Waiting on the other party.', ephemeral: true });
@@ -323,8 +348,7 @@ async function handleDispute(interaction, tradeId) {
 }
 
 // ---------- Panel: coin select -> ticket form modal ----------
-async function handleCoinSelect(interaction) {
-  const coin = interaction.values[0];
+async function handleCoinPick(interaction, coin) {
   const modal = new ModalBuilder().setCustomId(`ticket_modal_${coin}`).setTitle(`New ${COINS[coin].label} Trade`);
 
   const counterpartyInput = new TextInputBuilder()
@@ -404,7 +428,7 @@ module.exports = {
   handleRelease,
   handleAgreeCancel,
   handleDispute,
-  handleCoinSelect,
+  handleCoinPick,
   handleTicketModalSubmit,
   handleAdminAction,
   fundedActionRow,

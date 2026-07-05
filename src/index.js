@@ -73,13 +73,9 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    if (interaction.isStringSelectMenu() && interaction.customId === 'panel_coin_select') {
-      await interactions.handleCoinSelect(interaction);
-      return;
-    }
-
     if (interaction.isButton()) {
       const id = interaction.customId;
+      if (id.startsWith('panel_pick_coin_')) { await interactions.handleCoinPick(interaction, id.replace('panel_pick_coin_', '')); return; }
       if (id.startsWith('claim_sender_')) { await interactions.handleClaimRole(interaction, tradeIdFrom(id), 'sender'); return; }
       if (id.startsWith('claim_receiver_')) { await interactions.handleClaimRole(interaction, tradeIdFrom(id), 'receiver'); return; }
       if (id.startsWith('enter_amount_')) { await interactions.openAmountModal(interaction, tradeIdFrom(id)); return; }

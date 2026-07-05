@@ -1,4 +1,4 @@
-const { SlashCommandBuilder, ChannelType, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, EmbedBuilder } = require('discord.js');
+const { SlashCommandBuilder, ChannelType, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } = require('discord.js');
 const { query, logEvent } = require('../db');
 const { COINS } = require('../../config/coins');
 const { payout, getHotWalletBalance, hotWalletFor } = require('../payouts');
@@ -64,12 +64,11 @@ async function handlePanel(interaction) {
     )
     .setFooter({ text: 'Fees: free under $10 · 2% $10-50 · 3% $50-100 · 5% $100+' });
 
-  const menu = new StringSelectMenuBuilder()
-    .setCustomId('panel_coin_select')
-    .setPlaceholder('Select a coin to start a trade')
-    .addOptions(Object.keys(COINS).map(c => ({ label: COINS[c].label, value: c })));
-
-  const row = new ActionRowBuilder().addComponents(menu);
+  const row = new ActionRowBuilder().addComponents(
+    Object.keys(COINS).map(c =>
+      new ButtonBuilder().setCustomId(`panel_pick_coin_${c}`).setLabel(COINS[c].label).setStyle(ButtonStyle.Secondary)
+    )
+  );
   await interaction.channel.send({ embeds: [embed], components: [row] });
   await interaction.reply({ content: 'Panel posted.', ephemeral: true });
 }
@@ -175,8 +174,15 @@ async function handleAdminWallet(interaction) {
   const coin = interaction.options.getString('coin');
   await interaction.deferReply({ ephemeral: true });
   try {
-    const { address, balance } = await getHotWalletBalance(coin);
-    await interaction.editReply(`**${COINS[coin].label} hot wallet**\nAddress: \`${address}\`\nBalance: **${balance} ${COINS[coin].symbol}**`);
+    const result = await getHotWalletBalance(coin);
+    let msg = `**${COINS[coin].label} hot wallet**\nAddress: \`${result.address}\`\nBalance: **${result.balance} ${COINS[coin].symbol}**`;
+    if (coin === 'USDT_BEP20') {
+      msg += `\nBNB for gas: **${result.bnbBalance.toFixed(5)} BNB**`;
+      if (result.bnbLow) {
+        msg += `\n⚠️ Low on gas — sweeps and payouts will fail until you send more BNB (BEP20 network) to this address.`;
+      }
+    }
+    await interaction.editReply(msg);
   } catch (err) {
     await interaction.editReply(`❌ Couldn't check balance: ${err.message}`);
   }

@@ -10,12 +10,26 @@ const { logWalletAddress } = require('./db');
 const { COINS } = require('../config/coins');
 
 const HOT_INDEX = parseInt(process.env.HOT_WALLET_INDEX || '0', 10);
+const MIN_BNB_FOR_GAS = 0.0015; // roughly one transaction's worth, with a little headroom
 
 function hotWalletFor(coin) {
   // BTC/LTC/SOL each need their own hot wallet keypair at a fixed index.
   // ETH and USDT_BEP20 share the same EVM key.
   if (coin === 'USDT_BEP20') return deriveEVM(HOT_INDEX);
   return deriveAddress(coin, HOT_INDEX);
+}
+
+// Throws a clear, actionable error instead of letting a low-BNB transaction fail with a
+// cryptic on-chain revert. Called before every USDT_BEP20 operation that needs to pay gas.
+async function ensureBnbForGas(address, context) {
+  const bnbBalance = await bsc.getBnbBalance(address);
+  if (bnbBalance < MIN_BNB_FOR_GAS) {
+    throw new Error(
+      `Hot wallet is low on BNB for gas (has ${bnbBalance.toFixed(5)}, needs at least ${MIN_BNB_FOR_GAS}) ` +
+      `— ${context}. Send BNB to ${address} on the BNB Smart Chain (BEP20) network, then try again.`
+    );
+  }
+  return bnbBalance;
 }
 
 // Records every hot wallet address into the durable wallet_log table. Safe to call
@@ -45,7 +59,8 @@ async function getHotWalletBalance(coin) {
   }
   if (coin === 'USDT_BEP20') {
     const bal = await bsc.getBalance(hot.address);
-    return { address: hot.address, balance: bal.balanceUSDT };
+    const bnbBalance = await bsc.getBnbBalance(hot.address);
+    return { address: hot.address, balance: bal.balanceUSDT, bnbBalance, bnbLow: bnbBalance < MIN_BNB_FOR_GAS };
   }
   if (coin === 'SOL') {
     const bal = await sol.getBalance(hot.address);
@@ -75,6 +90,7 @@ async function sweepToHotWallet(coin, tradeIndex) {
   }
   if (coin === 'USDT_BEP20') {
     // deposit address needs a little BNB first to pay for the transfer's gas
+    await ensureBnbForGas(hot.address, 'needed to fund the deposit address before sweeping');
     await bsc.fundGas(hot.privateKey, deposit.address);
     const balance = await bsc.getBalance(deposit.address);
     const txHash = await bsc.sendUSDT(deposit.privateKey, hot.address, balance.balanceUSDT);
@@ -94,7 +110,10 @@ async function sweepToHotWallet(coin, tradeIndex) {
 async function payout(coin, toAddress, amount) {
   const hot = coin === 'USDT_BEP20' ? deriveEVM(HOT_INDEX) : deriveAddress(coin, HOT_INDEX);
   if (coin === 'ETH') return eth.sendETH(hot.privateKey, toAddress, amount);
-  if (coin === 'USDT_BEP20') return bsc.sendUSDT(hot.privateKey, toAddress, amount);
+  if (coin === 'USDT_BEP20') {
+    await ensureBnbForGas(hot.address, 'needed to send this payout');
+    return bsc.sendUSDT(hot.privateKey, toAddress, amount);
+  }
   if (coin === 'SOL') return sol.sendSOL(hot.secretKey, toAddress, amount);
   if (coin === 'LTC') {
     const sent = await ltc.sendLTC(hot.privateKeyWIF, hot.address, toAddress, amount);

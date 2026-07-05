@@ -16,6 +16,12 @@ and routes disputes to admin.
    can move every coin ever deposited. Treat your Render/Neon dashboard access like a bank
    vault key: 2FA everywhere, never paste the mnemonic into chat, back it up offline (paper,
    not a screenshot).
+3. **LTC balance/UTXO/broadcast lookups use Alchemy**, not BlockCypher — BlockCypher's free
+   tier (2,000 requests/day) gets exhausted fast by 30-second polling, while Alchemy's free
+   tier (30M compute units/month, no daily cap) has much more headroom. Get a free key at
+   alchemy.com, create an app for "Litecoin Mainnet," and set `ALCHEMY_API_KEY`. BlockCypher
+   is still used, but only for LTC fee-rate estimates — a rare call (once per sweep/payout,
+   not every poll cycle), so it stays well within its free tier even without a token.
 3. The confirmation-tracking for ETH/USDT currently treats "balance > 0" as sufficient rather
    than tracking the deposit tx's actual block depth — fine for a first pass, but for larger
    trades you'll want real per-tx confirmation counting to avoid acting on a reorg'd deposit.

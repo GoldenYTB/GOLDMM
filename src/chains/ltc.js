@@ -6,55 +6,69 @@ const { ECPairFactory } = require('ecpair');
 const { LITECOIN_NETWORK } = require('./networks');
 
 const ECPair = ECPairFactory(ecc);
-const TOKEN = process.env.BLOCKCYPHER_TOKEN ? `token=${process.env.BLOCKCYPHER_TOKEN}` : '';
-const API = 'https://api.blockcypher.com/v1/ltc/main';
 
-function withToken(url) {
-  if (!TOKEN) return url;
-  return url + (url.includes('?') ? '&' : '?') + TOKEN;
-}
+// Alchemy's UTXO API handles balance/confirmations/UTXO/broadcast lookups. Free tier is
+// 30M compute units/month with no daily cap — far more headroom than BlockCypher's free
+// 2,000/day, which is what was causing 429 rate-limit errors during normal polling.
+const ALCHEMY_API_KEY = process.env.ALCHEMY_API_KEY || 'docs-demo'; // demo key is heavily rate-limited, get your own free key at alchemy.com
+const ALCHEMY_BASE = `https://litecoin-mainnet.g.alchemy.com/v2/${ALCHEMY_API_KEY}/api/v2`;
+
+// Fee-rate estimation stays on BlockCypher's endpoint since it's only called once per
+// sweep/payout (not every 30s poll cycle), so it doesn't hit the same rate limits that
+// balance-polling used to. Still uses your token if you have one.
+const BLOCKCYPHER_TOKEN = process.env.BLOCKCYPHER_TOKEN ? `token=${process.env.BLOCKCYPHER_TOKEN}` : '';
+const BLOCKCYPHER_API = 'https://api.blockcypher.com/v1/ltc/main';
 
 async function getBalance(address) {
-  const res = await fetch(withToken(`${API}/addrs/${address}/balance`));
-  if (!res.ok) throw new Error(`BlockCypher error ${res.status}`);
+  const res = await fetch(`${ALCHEMY_BASE}/address/${address}`);
+  if (!res.ok) throw new Error(`Alchemy error ${res.status}`);
   const data = await res.json();
+  const confirmedSats = parseInt(data.balance, 10) || 0;
+  const unconfirmedSats = parseInt(data.unconfirmedBalance, 10) || 0;
   return {
-    confirmedSats: data.balance,
-    unconfirmedSats: data.unconfirmed_balance,
-    confirmedLTC: data.balance / 1e8,
+    confirmedSats,
+    unconfirmedSats,
+    confirmedLTC: confirmedSats / 1e8,
   };
 }
 
 async function getConfirmations(address) {
-  const res = await fetch(withToken(`${API}/addrs/${address}`));
-  if (!res.ok) throw new Error(`BlockCypher error ${res.status}`);
-  const data = await res.json();
-  if (data.unconfirmed_n_tx > 0 && data.n_tx === data.unconfirmed_n_tx) return 0;
-  return data.confirmed_txrefs && data.confirmed_txrefs.length
-    ? Math.min(...data.confirmed_txrefs.map(t => t.confirmations))
-    : 0;
+  const res = await fetch(`${ALCHEMY_BASE}/utxo/${address}?confirmed=true`);
+  if (!res.ok) throw new Error(`Alchemy error ${res.status}`);
+  const utxos = await res.json();
+  if (!utxos.length) return 0;
+  return Math.min(...utxos.map(u => u.confirmations));
 }
 
-// Confirmed spendable UTXOs, with the output script attached so we can build witnessUtxo entries
+// Confirmed spendable UTXOs. Alchemy doesn't return the output script directly, so we
+// reconstruct it ourselves from the address — reliable since we generated the address
+// ourselves and know its exact type (P2WPKH).
 async function getSpendableUTXOs(address) {
-  const res = await fetch(withToken(`${API}/addrs/${address}?unspentOnly=true&includeScript=true&confirmations=1`));
-  if (!res.ok) throw new Error(`BlockCypher error ${res.status}`);
-  const data = await res.json();
-  const refs = (data.txrefs || []).filter(r => r.confirmations >= 1 && !r.spent);
-  return refs.map(r => ({
-    txid: r.tx_hash,
-    vout: r.tx_output_n,
-    value: r.value,
-    scriptHex: r.script,
-  }));
+  const res = await fetch(`${ALCHEMY_BASE}/utxo/${address}?confirmed=true`);
+  if (!res.ok) throw new Error(`Alchemy error ${res.status}`);
+  const utxos = await res.json();
+  const outputScript = bitcoin.address.toOutputScript(address, LITECOIN_NETWORK).toString('hex');
+  return utxos
+    .filter(u => u.confirmations >= 1)
+    .map(u => ({
+      txid: u.txid,
+      vout: u.vout,
+      value: parseInt(u.value, 10),
+      scriptHex: outputScript,
+    }));
 }
 
 async function getFeeRatePerByte() {
-  const res = await fetch(withToken(API));
-  if (!res.ok) return 20; // sane fallback sat/byte
-  const data = await res.json();
-  const perKb = data.medium_fee_per_kb || 20000;
-  return Math.max(Math.ceil(perKb / 1000), 1);
+  try {
+    const url = BLOCKCYPHER_TOKEN ? `${BLOCKCYPHER_API}?${BLOCKCYPHER_TOKEN}` : BLOCKCYPHER_API;
+    const res = await fetch(url);
+    if (!res.ok) return 20; // sane fallback sat/byte
+    const data = await res.json();
+    const perKb = data.medium_fee_per_kb || 20000;
+    return Math.max(Math.ceil(perKb / 1000), 1);
+  } catch (e) {
+    return 20; // never let a fee-lookup hiccup block a sweep/payout entirely
+  }
 }
 
 function estimateVBytes(numInputs, numOutputs) {
@@ -62,14 +76,10 @@ function estimateVBytes(numInputs, numOutputs) {
 }
 
 async function broadcastTx(hex) {
-  const res = await fetch(withToken(`${API}/txs/push`), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ tx: hex }),
-  });
+  const res = await fetch(`${ALCHEMY_BASE}/sendtx/${hex}`);
   const data = await res.json();
-  if (!res.ok) throw new Error(`Broadcast failed: ${JSON.stringify(data)}`);
-  return data.tx.hash;
+  if (!res.ok || !data.result) throw new Error(`Broadcast failed: ${JSON.stringify(data)}`);
+  return data.result;
 }
 
 // Selects UTXOs up to targetSats + estimated fee. If targetSats is null, selects ALL utxos (sweep).
